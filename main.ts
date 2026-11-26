@@ -14,7 +14,9 @@
 //   - Exits: the whole position goes when EMA(8) crosses back under
 //     EMA(21), when a scalp position's own EMA(5) crosses under its
 //     EMA(13), at a 5% stop (3% for scalp) under cost, or at 12% over
-//     cost.
+//     cost. Protection: once a position has been up 6% (4% for a scalp),
+//     its stop moves to breakeven — a winner that fades is scratched
+//     instead of ridden back to the stop.
 //   - No trade is taken before a symbol has 22 closes: early EMA values
 //     are seeded from the first close and are too noisy to trust.
 //   - One full stake is equity / 7, so the bot can hold the whole
@@ -72,6 +74,8 @@ interface Series {
 const series = new Map<string, Series>();
 /** Which tier bought each held symbol: 'core' for a full stake, 'scalp' for a small one. */
 const tier = new Map<string, 'core' | 'scalp'>();
+/** Best a held position has done, in basis points of its cost, for breakeven protection. */
+const peakBps = new Map<string, bigint>();
 
 function getSeries(symbol: string): Series {
   let s = series.get(symbol);
@@ -124,14 +128,26 @@ function pushBar(bar: Bar): Series {
   return s;
 }
 
-/** Exit a held position on its stop, its take-profit, or a trend cross down. */
+/** Exit a held position on its stop, its take-profit, a trend cross down, or a faded winner. */
 function exits(state: BarsState, symbol: string, held: { qty: bigint; cost: bigint }, s: Series): boolean {
   const value = state.value(symbol, held.qty);
-  const stopNum = tier.get(symbol) === 'scalp' ? 97n : 95n;
+  const scalp = tier.get(symbol) === 'scalp';
+  const stopNum = scalp ? 97n : 95n;
+  // Breakeven protection: track the best the position has done, in basis
+  // points of its cost. Once it has been up 6% (4% for a scalp), never let
+  // it turn into a loss — exit at breakeven instead of riding it back to
+  // the 5% (3%) stop. With a ~21% win rate against a 5% stop, fading
+  // winners are the main bleed; scratching them beats paying the stop.
+  const pctBps = (value * 10000n) / held.cost;
+  const seen = peakBps.get(symbol) ?? 0n;
+  const best = pctBps > seen ? pctBps : seen;
+  if (pctBps > seen) peakBps.set(symbol, pctBps);
+  const protectBps = scalp ? 10400n : 10600n;
+  if (best >= protectBps && pctBps <= 10000n) return true;
   if (value * 100n <= held.cost * stopNum) return true;
   if (value * 100n >= held.cost * 112n) return true;
   if (s.coreDown) return true;
-  if (tier.get(symbol) === 'scalp' && s.scalpDown) return true;
+  if (scalp && s.scalpDown) return true;
   return false;
 }
 
@@ -145,9 +161,12 @@ await runBars({
     // Warm-up bars build history only; the replay rejects every order decided on one.
     if (state.warmingUp) return [];
     const { caps, fees } = state.hello;
-    // Drop tiers for positions the market no longer holds (a rejected buy, a filled sell).
+    // Drop tiers (and their breakeven peaks) for positions the market no longer holds (a rejected buy, a filled sell).
     for (const symbol of [...tier.keys()]) {
-      if (!state.positions.has(symbol)) tier.delete(symbol);
+      if (!state.positions.has(symbol)) {
+        tier.delete(symbol);
+        peakBps.delete(symbol);
+      }
     }
     const sol = series.get('SOL');
     const marketUp =
