@@ -19,7 +19,9 @@ decides when to hold SOL and the other six symbols, and when to sit in USDC.
   while the market gate is shut. Its stop is tighter, so a whipsaw costs little.
 - **Exits:** the whole position goes when EMA(8) crosses back under EMA(21),
   when a scalp position's own EMA(5) crosses under its EMA(13), at a 5% stop
-  (3% for scalp) under cost, or at 12% over cost.
+  (3% for scalp) under cost, or at 12% over cost. Protection: once a position
+  has been up 6% (4% for a scalp), its stop moves to breakeven — a winner that
+  fades is scratched instead of ridden back to the stop.
 - **Patience:** no trade before a symbol has 22 closes; early EMA values are
   seeded from the first close and too noisy to trust.
 
